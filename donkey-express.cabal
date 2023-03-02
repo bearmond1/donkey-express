@@ -1,0 +1,130 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.35.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           donkey-express
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/donkey-express#readme>
+homepage:       https://github.com/githubuser/donkey-express#readme
+bug-reports:    https://github.com/githubuser/donkey-express/issues
+author:         bearmond
+maintainer:     madOrrange@gmail.com
+copyright:      2023 bearmond
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/donkey-express
+
+library
+  other-modules:
+      Paths_donkey_express
+  hs-source-dirs:
+      src
+  default-extensions:
+      DuplicateRecordFields
+      NoImplicitPrelude
+      NamedFieldPuns
+      OverloadedStrings
+      OverloadedRecordDot
+      RecordWildCards
+      ScopedTypeVariables
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      base >=4.7 && <5
+    , bencode
+    , bytestring
+    , containers
+    , cryptonite
+    , directory
+    , http-client
+    , http-conduit
+    , memory
+    , network
+    , network-simple
+    , protolude
+    , random
+    , stm
+    , text
+    , time
+  default-language: Haskell2010
+
+executable donkey-express-exe
+  main-is: Main.hs
+  other-modules:
+      TorrentFile
+      Tracker
+      Paths_donkey_express
+  hs-source-dirs:
+      app
+  default-extensions:
+      DuplicateRecordFields
+      NoImplicitPrelude
+      NamedFieldPuns
+      OverloadedStrings
+      OverloadedRecordDot
+      RecordWildCards
+      ScopedTypeVariables
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , bencode
+    , bytestring
+    , containers
+    , cryptonite
+    , directory
+    , donkey-express
+    , http-client
+    , http-conduit
+    , memory
+    , network
+    , network-simple
+    , protolude
+    , random
+    , stm
+    , text
+    , time
+  default-language: Haskell2010
+
+test-suite donkey-express-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_donkey_express
+  hs-source-dirs:
+      test
+  default-extensions:
+      DuplicateRecordFields
+      NoImplicitPrelude
+      NamedFieldPuns
+      OverloadedStrings
+      OverloadedRecordDot
+      RecordWildCards
+      ScopedTypeVariables
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , bencode
+    , bytestring
+    , containers
+    , cryptonite
+    , directory
+    , donkey-express
+    , http-client
+    , http-conduit
+    , memory
+    , network
+    , network-simple
+    , protolude
+    , random
+    , stm
+    , text
+    , time
+  default-language: Haskell2010

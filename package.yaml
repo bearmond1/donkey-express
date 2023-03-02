@@ -1,0 +1,83 @@
+name:                donkey-express
+version:             0.1.0.0
+github:              "githubuser/donkey-express"
+license:             BSD3
+author:              "bearmond"
+maintainer:          "madOrrange@gmail.com"
+copyright:           "2023 bearmond"
+
+extra-source-files:
+- README.md
+- CHANGELOG.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/githubuser/donkey-express#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+- bencode
+- bytestring
+- containers
+- cryptonite
+- directory
+- random
+- http-client
+- http-conduit
+- time
+- text
+- stm
+- memory
+- network
+- network-simple
+- protolude
+
+default-extensions: 
+- DuplicateRecordFields
+- NoImplicitPrelude
+- NamedFieldPuns
+- OverloadedStrings
+- OverloadedRecordDot
+- RecordWildCards
+- ScopedTypeVariables
+
+ghc-options:
+- -Wall
+- -Wcompat
+- -Widentities
+- -Wincomplete-record-updates
+- -Wincomplete-uni-patterns
+- -Wmissing-export-lists
+- -Wmissing-home-modules
+- -Wpartial-fields
+- -Wredundant-constraints
+
+library:
+  source-dirs: src
+
+executables:
+  donkey-express-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - donkey-express
+
+tests:
+  donkey-express-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - donkey-express
