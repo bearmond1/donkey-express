@@ -16,10 +16,6 @@ import Data.ByteArray as BA (unpack)
 
 
 
-getInfoHash :: BEncode -> BS.ByteString
-getInfoHash bc = BS.pack $ BA.unpack (Hash.hash (BS.toStrict $ bPack bc) :: Digest SHA1)
-
-
 data TFile 
   = TFile
   { info :: TFilesInfo
@@ -47,7 +43,7 @@ data TFilesInfo
   , pieces :: BS.ByteString
   , private :: Maybe Integer
   , directoryName :: FilePath
-  , files :: [FileInfo]
+  , files :: [FileInfo] -- "dir1/dir2/file.ext" ==  ["dir1", "dir2", "file.ext"]
   }
   deriving (Eq,Show)
   
@@ -60,6 +56,22 @@ data FileInfo
   deriving (Eq,Show)
 
 
+
+
+
+parseTFile :: FilePath -> IO TFile
+parseTFile path = do
+  --print "parseTFile"
+  bs <- BS.readFile path
+
+  benc <- case bRead $ BS.fromStrict bs of
+            Nothing -> undefined
+            Just bc -> return bc
+  case runParser torrentInfoReader benc of
+    Right tf -> return tf
+    _ -> undefined
+	
+	
 
 torrentInfoReader :: BParser TFile
 torrentInfoReader = do
@@ -83,6 +95,9 @@ torrentInfoReader = do
   let infoHash = getInfoHash info'
   return TFile {..}
 
+
+getInfoHash :: BEncode -> BS.ByteString
+getInfoHash bc = BS.pack $ BA.unpack (Hash.hash (BS.toStrict $ bPack bc) :: Digest SHA1)
 
 
 getBList :: BEncode -> BParser [BEncode]
@@ -115,7 +130,7 @@ tFilesReader = singleF <|> multiF
       pieceLength <- bint $ dict "piece length"
       pieces <- fmap BS.toStrict $ bbytestring $ dict "pieces"
       private <- BEP.optional $ bint $ dict "private"
-      name <- fmap Text.pack $ bstring $ dict "name"
+      directoryName <- bstring $ dict "name"
       files <- BEP.list "files" tFilesInfo
       return MultipleFilesInfo{..}
 
@@ -125,16 +140,3 @@ tFilesInfo = do
   length <- bint $ dict "length"
   path <- BEP.list "path" $ fmap Text.pack $ bstring token 
   return FileInfo{..}
-
-
-
-parseTFile :: FilePath -> IO TFile
-parseTFile path = do
-  bs <- BS.readFile path
-
-  benc <- case bRead $ BS.fromStrict bs of
-            Nothing -> undefined
-            Just bc -> return bc
-  case runParser torrentInfoReader benc of
-    Right tf -> return tf
-    _ -> undefined

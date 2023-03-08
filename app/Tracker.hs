@@ -1,9 +1,11 @@
 module Tracker where
 
+import Control.Monad.Trans.Maybe 
 
 import Control.Concurrent
-import Control.Concurrent.STM
-import Control.Concurrent.STM.TVar
+import Control.Concurrent.Async
+-- import Control.Concurrent.STM
+-- import Control.Concurrent.STM.TVar
 
 import Control.Exception     (try)
 import Data.Maybe            (catMaybes)
@@ -18,7 +20,7 @@ import Network.Socket
 
 import Data.BEncode as BE
 import Data.BEncode.Parser as BEP
-
+--import Network.URI.Encode (encodeByteString)
 import Data.ByteString as BS 
 import Data.ByteString.Lazy as LBS 
 import System.Random
@@ -34,7 +36,7 @@ data TrackerResponse
   , trackerID :: Maybe Integer
   , complete :: Integer
   , incomplete :: Integer
-  , peers :: [SockAddr]
+  , tPeers :: [(Text,SockAddr)]
   }
   deriving (Eq,Show)
   
@@ -53,54 +55,45 @@ type URL = Text
 respTimeout = 3000000
 
 
-collectPeers :: TFile -> IO [TrackerResponse]
-collectPeers tFile = do 
+-- gathering as much peers as possible in given time
+collectPeers :: TFile -> [Word8] -> IO (TFile,[TrackerResponse])
+collectPeers tFile clientID = do 
   httpTrackers <- getHTTPtrackers
-  let list = tFile.announce : (PL.concat tFile.announceList) ++ httpTrackers
-  tVar <- atomically $ newTVar []
-  mapM (forkIO . (trackerRequest' tFile tVar)) list
-  threadDelay (respTimeout*2)
-  readTVarIO tVar
+  let list = PL.take 7 $ tFile.announce : (PL.concat tFile.announceList) ++ httpTrackers
+  --print $ "collectPeers " ++ show list
+  responses <- mapConcurrently (\url -> runMaybeT $ trackerRequest tFile clientID url) list
+  print "end collecting peers"
+  return (tFile,catMaybes responses)
   
   
--- perform announce request on givel single URL
-trackerRequest' :: TFile -> TVar [TrackerResponse] -> URL -> IO ()
-trackerRequest' tFile tVar url = do
-
-  (peer_id :: [Word8]) <- initStdGen >>= (\x -> return $ PL.take 20 $ randoms x )
-  
+-- perform announce request on given single URL
+trackerRequest :: TFile -> [Word8] -> URL -> MaybeT IO TrackerResponse 
+trackerRequest tFile clientID url = do
+  --liftIO $ print "tracker req"
   let totalLength = case tFile.info of
                        SingleFileInfo{length} -> length
                        MultipleFilesInfo{..} -> pieceLength * toInteger (PL.length files)
 
-  request' <- parseRequest $ Text.unpack url
+  -- later to implement UDP trackers support
+  request' <- hoistMaybe (parseRequest ( Text.unpack url ) :: Maybe Request)
   let request = 
         setRequestResponseTimeout (responseTimeoutMicro respTimeout) $
         setRequestQueryString
          [ ("info_hash", Just tFile.infoHash)
-         , ("peer_id", Just $ BS.pack peer_id)
+         , ("peer_id", Just $ BS.pack clientID)
          , ("port", Just "6881") -- to place port into enviroment
          , ("event", Just "started")
          , ("uploaded", Just "0")
          , ("downloaded", Just "0")
          , ("left", Just "0") ] 
          request'
-
-  eResponse <- try $  Simple.httpLbs request
   
-  case eResponse of
-    Right response ->
-      case bRead $ getResponseBody response of
-       Nothing -> return ()
-       Just bc -> 
-         case runParser responseParser bc of
-           Right tResponse -> do
-             atomically $ modifyTVar tVar (tResponse : )
-             return ()
-
-           _ -> return ()
-    Left e -> (print (e :: HttpException)) >> return ()
-
+  mbResponse <- liftIO $ catch (fmap Just $ Simple.httpLbs request) (\(e :: HttpException) -> return Nothing)
+  response <- hoistMaybe mbResponse
+  --print response
+  bencode <- hoistMaybe $ bRead $ getResponseBody response
+  hoistMaybe $ rightToMaybe $ runParser responseParser bencode
+  -- to check peer SockAddr here
     
   
   
@@ -133,33 +126,59 @@ responseParser = do
   incomplete <- bint $ dict "incomplete"
   downloaded <- bint $ dict "downloaded"
   
-  peers <- (BEP.list "peers" dictPeers) <|> binaryPeers
+  tPeers <- (BEP.list "peers" dictPeers) <|> binaryPeers
   
   return TrackerResponse{..}
   
   where
     dictPeers = do
       peerID <- fmap Text.pack $ bstring $ dict "peer id"
-      ip <- fmap fromInteger $ bint $ dict "ip"
+      host <- fmap fromInteger $ bint  $ dict "ip" -- can be DNS name
       port <- fmap fromInteger $ bint $ dict "port"
-      return $ SockAddrInet 0 minBound
+      return $ (peerID,SockAddrInet port host)
 
     binaryPeers = do
       bs <- bbytestring $ dict "peers"
-      let peersInfo = \(ip,port) -> SockAddrInet port ip 
       return $ decodeIps4 $ LBS.toStrict bs
-      
-
-    decodeIps4 :: BS.ByteString -> [SockAddr]
-    decodeIps4 bs | BS.null bs = []
-                  | BS.length bs >= 6 = 
-                       let (ip, r1) = BS.splitAt 4 bs
-                           (port, r2) = BS.splitAt 2 r1
-                           i' = cW32 ip
-                           p' = fromIntegral $ cW16 port
-                       in (SockAddrInet p' i') : decodeIps4 r2
+    
+    decodeIps6 :: BS.ByteString -> [(Text,SockAddr)]
+    decodeIps6 bs | BS.null bs = []
+                  | BS.length bs >= 18 =
+                        let (ip6, r1) = BS.splitAt 16 bs
+                            (port, r2) = BS.splitAt 2 r1
+                            i' = cW128 ip6
+                            p' = fromIntegral $ cW16 port
+                        in ("",SockAddrInet6 p' 0 i' 0) : decodeIps6 r2
                   | otherwise = [] 
 
+    -- decodeIps4 :: BS.ByteString -> [(Text,SockAddr)]
+    -- decodeIps4 bs | BS.null bs = []
+                  -- | BS.length bs >= 6 = 
+                       -- let (ip, r1) = BS.splitAt 4 bs
+                           -- (port, r2) = BS.splitAt 2 r1
+                           -- i' = cW32 ip
+                           -- p' = fromIntegral $ cW16 port
+                       -- in ("",(SockAddrInet p' i')) : decodeIps4 r2
+                  -- | otherwise = [] 
+                  
+    decodeIps4 :: BS.ByteString -> [(Text,SockAddr)]
+    decodeIps4 bs | BS.null bs = []
+                  | mod (BS.length bs) 6 == 0 = 
+                       let (ip, r1) = BS.splitAt 4 bs
+                           (port', r2) = BS.splitAt 2 r1
+                           (a:b:c:d:[]) = BS.unpack ip
+                           host = tupleToHostAddress (a,b,c,d)
+                           (e:f:[]) = BS.unpack port'
+                           port = fromInteger $ 256 * (toInteger e) + (toInteger f) 
+                       in ("",(SockAddrInet port host)) : decodeIps4 r2
+                  | otherwise = [] 
+
+    cW128 :: BS.ByteString -> (Word32, Word32, Word32, Word32)
+    cW128 bs =
+        let (q1, r1) = BS.splitAt 4 bs
+            (q2, r2) = BS.splitAt 4 r1
+            (q3, q4) = BS.splitAt 4 r2
+        in (cW32 q1, cW32 q2, cW32 q3, cW32 q4)
     
     cW32 :: BS.ByteString -> Word32
     cW32 bs = fromIntegral . sum $ s
@@ -173,3 +192,10 @@ responseParser = do
     to6Bytes :: BS.ByteString -> [BS.ByteString]
     to6Bytes bs | bs == (BS.empty) = []
     to6Bytes list = [BS.take 6 list] ++ to6Bytes (BS.drop 6 list) 
+
+
+
+
+
+hoistMaybe :: Applicative m => Maybe b -> MaybeT m b
+hoistMaybe = MaybeT . pure

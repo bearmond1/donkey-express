@@ -20,25 +20,34 @@ extra-source-files:
 description:         Please see the README on GitHub at <https://github.com/githubuser/donkey-express#readme>
 
 dependencies:
+- attoparsec
+- async
 - base >= 4.7 && < 5
 - bencode
 - bytestring
 - containers
 - cryptonite
 - directory
-- random
+- ghc
 - http-client
 - http-conduit
 - time
 - text
+- transformers
 - stm
 - memory
 - network
+- network-bsd
+- network-run
 - network-simple
+- network-transport
 - protolude
+#- uri-encode
+- random
 
 default-extensions: 
 - DuplicateRecordFields
+- FlexibleContexts
 - NoImplicitPrelude
 - NamedFieldPuns
 - OverloadedStrings
