@@ -61,7 +61,6 @@ data FileInfo
 
 parseTFile :: FilePath -> IO TFile
 parseTFile path = do
-  --print "parseTFile"
   bs <- BS.readFile path
 
   benc <- case bRead $ BS.fromStrict bs of

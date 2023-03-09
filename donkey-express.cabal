@@ -70,6 +70,7 @@ executable donkey-express-exe
       PeerWireProtocol
       TorrentFile
       Tracker
+      Types
       Paths_donkey_express
   hs-source-dirs:
       app

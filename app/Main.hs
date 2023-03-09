@@ -7,6 +7,7 @@ import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import TorrentFile
 import Tracker
+import Types
 import PeerWireProtocol
 import System.Directory
 import System.Random
@@ -16,40 +17,48 @@ import Data.Text as Text
 
 import Network.BSD
 import Network.Socket                            
-import System.IO 
+import System.IO hiding (print)
+
+
+
 
 main :: IO ()
-main = do    
-  -- proto <- getProtocolNumber "tcp"                                    
-  -- sock <- socket AF_INET Stream proto               
-  -- bind sock (SockAddrInet 6881 0)
-  -- listen sock 2                                  
-  -- System.IO.putStrLn "Listening on port 6881..."           
-
-  -- loopForever sock       
-  
-  --runTCPServer (Just "77.235.5.98") "6881" (tcpServer []) 
-  -- hhh
-  clientID <- getClientID
+main = do
+  let (host,port) = ("158.181.223.125","6881")
+  clientID <- getClientID -- to put into config
   files' <- listDirectory torrentsFolder
   setCurrentDirectory torrentsFolder
   files <- mapM makeAbsolute files'
-  torrents <- mapConcurrently (\path -> parseTFile path >>= (\tFile -> collectPeers tFile clientID)) files  
-  initializeTorrents torrents ("77.235.5.98","6881") clientID
+  mapConcurrently (runTorrent clientID (host,port))files
+  return ()
+  
+  
+  -- torrents <- mapConcurrently (\path -> parseTFile path >>= (\tFile -> collectPeers tFile clientID (host,port))) files 
+  -- print "gathered torrents"
+  -- -- rigth now state isnt kept between sessions, so iHave == []
+  -- -- create initial torrents states and put them into TVars
+  -- let initStates = PL.map (\(tFile,resps) -> NetState tFile resps [] [] 0 0 (getTotalLength tFile)) torrents
+  -- tVars <- mapM ( atomically . newTVar ) initStates
+  
+  -- -- start processes that do the talking to the tracker
+  -- print "followTrackers"
+  -- mapConcurrently (followTrackers clientID (host,port)) tVars
+  -- return ()
+  -- processes which talks to peers
+  -- TCP server
+  --initializeTorrents torrents ("158.181.223.125","6881") clientID
 
 
-
--- loopForever :: Socket -> IO ()                   
--- loopForever sock = do                            
-  -- (conn, _) <- accept sock                       
-  -- handleSock <- socketToHandle conn ReadWriteMode
-
-  -- line <- hGetLine handleSock                    
-  -- System.IO.putStrLn $ "Request received: " ++ line        
-
-  -- System.IO.hPutStrLn handleSock $ "Hey, client!"          
-  -- hClose handleSock                              
-  -- loopForever sock      
+runTorrent :: [Word8] -> (Text,Text) -> FilePath -> IO ()
+runTorrent clientID (host,port) path = do
+  tFile <- parseTFile path
+  torrent <- collectPeers tFile clientID (host,port)
+  
+  -- rigth now we dont keep looking for trackers
+  when ((snd torrent) /= []) $ do
+    let initState = NetState tFile (snd torrent) [] [] 0 0 (getTotalLength tFile)
+    tVar <- atomically $ newTVar initState
+    followTrackers clientID (host,port) tVar
   
   
   

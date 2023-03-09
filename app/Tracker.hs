@@ -4,14 +4,15 @@ import Control.Monad.Trans.Maybe
 
 import Control.Concurrent
 import Control.Concurrent.Async
--- import Control.Concurrent.STM
--- import Control.Concurrent.STM.TVar
+import Control.Concurrent.STM
+import Control.Concurrent.STM.TVar
 
 import Control.Exception     (try)
 import Data.Maybe            (catMaybes)
 import Data.List as L hiding (unlines,sum)
 import Data.Char             (chr, ord)
 import Data.Text as Text
+import Data.Text.Encoding
 import Protolude as PL
 
 import Network.HTTP.Client as Client
@@ -20,59 +21,43 @@ import Network.Socket
 
 import Data.BEncode as BE
 import Data.BEncode.Parser as BEP
---import Network.URI.Encode (encodeByteString)
 import Data.ByteString as BS 
 import Data.ByteString.Lazy as LBS 
 import System.Random
 import TorrentFile
+import Types
 
 
 targetPeersNum = 25
-
-data TrackerResponse
-  = TrackerResponse
-  { interval :: Integer
-  , minInterval :: Integer
-  , trackerID :: Maybe Integer
-  , complete :: Integer
-  , incomplete :: Integer
-  , tPeers :: [(Text,SockAddr)]
-  }
-  deriving (Eq,Show)
-  
-data PeerInfo
-  = PeerInfo
-  { peerID :: Text
-  , ip :: Int
-  , port :: Int
-  }
-  deriving (Eq,Show)
-
-  
-type URL = Text
 
 -- 3 sec
 respTimeout = 3000000
 
 
+-- initial peers collecting. unresponding trackers left aside
 -- gathering as much peers as possible in given time
-collectPeers :: TFile -> [Word8] -> IO (TFile,[TrackerResponse])
-collectPeers tFile clientID = do 
+collectPeers :: TFile -> [Word8] -> (Text,Text) -> IO (TFile,[TrackerResponse])
+collectPeers tFile clientID (host,port) = do 
   httpTrackers <- getHTTPtrackers
   let list = PL.take 7 $ tFile.announce : (PL.concat tFile.announceList) ++ httpTrackers
   --print $ "collectPeers " ++ show list
-  responses <- mapConcurrently (\url -> runMaybeT $ trackerRequest tFile clientID url) list
-  print "end collecting peers"
+  responses <- mapConcurrently (\url -> runMaybeT $ initTrackerReq tFile clientID url (host,port) ) list
+  --print "end collecting peers"
   return (tFile,catMaybes responses)
+
+
+
+initTrackerReq :: TFile -> [Word8] -> URL -> (Text,Text) -> MaybeT IO TrackerResponse
+initTrackerReq tFile clientID url (host,port) = 
+  trackerRequest clientID (host,port) tFile url (Just "started") 0 0
+  
   
   
 -- perform announce request on given single URL
-trackerRequest :: TFile -> [Word8] -> URL -> MaybeT IO TrackerResponse 
-trackerRequest tFile clientID url = do
-  --liftIO $ print "tracker req"
-  let totalLength = case tFile.info of
-                       SingleFileInfo{length} -> length
-                       MultipleFilesInfo{..} -> pieceLength * toInteger (PL.length files)
+trackerRequest :: [Word8] -> (Text,Text)-> TFile -> URL -> Maybe TrackerEvent -> Uploaded -> Downloaded -> MaybeT IO TrackerResponse
+trackerRequest clientID (host,port) tFile url mbEvent upl downl= do
+  print "trackerRequest"
+  let totalLength = getTotalLength tFile
 
   -- later to implement UDP trackers support
   request' <- hoistMaybe (parseRequest ( Text.unpack url ) :: Maybe Request)
@@ -81,20 +66,29 @@ trackerRequest tFile clientID url = do
         setRequestQueryString
          [ ("info_hash", Just tFile.infoHash)
          , ("peer_id", Just $ BS.pack clientID)
-         , ("port", Just "6881") -- to place port into enviroment
-         , ("event", Just "started")
-         , ("uploaded", Just "0")
-         , ("downloaded", Just "0")
-         , ("left", Just "0") ] 
+         , ("ip", Just $ encodeUtf8 host)
+         , ("port", Just $ encodeUtf8 port) -- to place port into enviroment
+         , ("uploaded", Just $ show upl) -- total number of bytes uploaded in base ten ASCII
+         , ("downloaded", Just $ show downl) -- total number of bytes downloaded in base ten ASCII
+         , ("left", Just $ show $ totalLength - downl) -- The number of bytes to download in base ten ASCII
+         , ("event", fmap encodeUtf8 mbEvent) ]  -- omitted for regular updates         
          request'
   
   mbResponse <- liftIO $ catch (fmap Just $ Simple.httpLbs request) (\(e :: HttpException) -> return Nothing)
-  response <- hoistMaybe mbResponse
+  trResponse <- hoistMaybe mbResponse
+  bencode <- hoistMaybe $ bRead $ getResponseBody trResponse
+  response <- hoistMaybe $ rightToMaybe $ runParser (responseParser url) bencode 
   --print response
-  bencode <- hoistMaybe $ bRead $ getResponseBody response
-  hoistMaybe $ rightToMaybe $ runParser responseParser bencode
-  -- to check peer SockAddr here
-    
+  return response
+
+getTotalLength :: TFile -> Integer
+getTotalLength tFile = case tFile.info of
+                         SingleFileInfo{length} -> length
+                         MultipleFilesInfo{..} -> pieceLength * toInteger (PL.length files)
+
+
+hoistMaybe :: Applicative m => Maybe b -> MaybeT m b
+hoistMaybe = MaybeT . pure
   
   
 -- public list of open trackers
@@ -117,8 +111,8 @@ knownHTTPSTrackersList = "https://raw.githubusercontent.com/ngosang/trackerslist
 
 
 
-responseParser :: BParser TrackerResponse
-responseParser = do
+responseParser :: URL -> BParser TrackerResponse
+responseParser url = do
   interval <- bint $ dict "interval"
   minInterval <- bint $ dict "min interval"
   trackerID <- BEP.optional $ bint $ dict "tracker id"
@@ -132,37 +126,18 @@ responseParser = do
   
   where
     dictPeers = do
-      peerID <- fmap Text.pack $ bstring $ dict "peer id"
-      host <- fmap fromInteger $ bint  $ dict "ip" -- can be DNS name
+      peerID <- fmap Text.pack $ bstring $ dict "peer id"  
+      -- possibly there are hexed IPv6 and DNS names 
+      host <- fmap fromInteger $ bint  $ dict "ip"
       port <- fmap fromInteger $ bint $ dict "port"
       return $ (peerID,SockAddrInet port host)
 
     binaryPeers = do
       bs <- bbytestring $ dict "peers"
-      return $ decodeIps4 $ LBS.toStrict bs
-    
-    decodeIps6 :: BS.ByteString -> [(Text,SockAddr)]
-    decodeIps6 bs | BS.null bs = []
-                  | BS.length bs >= 18 =
-                        let (ip6, r1) = BS.splitAt 16 bs
-                            (port, r2) = BS.splitAt 2 r1
-                            i' = cW128 ip6
-                            p' = fromIntegral $ cW16 port
-                        in ("",SockAddrInet6 p' 0 i' 0) : decodeIps6 r2
-                  | otherwise = [] 
+      return $ decodeIPv4 $ LBS.toStrict bs
 
-    -- decodeIps4 :: BS.ByteString -> [(Text,SockAddr)]
-    -- decodeIps4 bs | BS.null bs = []
-                  -- | BS.length bs >= 6 = 
-                       -- let (ip, r1) = BS.splitAt 4 bs
-                           -- (port, r2) = BS.splitAt 2 r1
-                           -- i' = cW32 ip
-                           -- p' = fromIntegral $ cW16 port
-                       -- in ("",(SockAddrInet p' i')) : decodeIps4 r2
-                  -- | otherwise = [] 
-                  
-    decodeIps4 :: BS.ByteString -> [(Text,SockAddr)]
-    decodeIps4 bs | BS.null bs = []
+    decodeIPv4 :: BS.ByteString -> [(Text,SockAddr)]
+    decodeIPv4 bs | BS.null bs = []
                   | mod (BS.length bs) 6 == 0 = 
                        let (ip, r1) = BS.splitAt 4 bs
                            (port', r2) = BS.splitAt 2 r1
@@ -170,32 +145,52 @@ responseParser = do
                            host = tupleToHostAddress (a,b,c,d)
                            (e:f:[]) = BS.unpack port'
                            port = fromInteger $ 256 * (toInteger e) + (toInteger f) 
-                       in ("",(SockAddrInet port host)) : decodeIps4 r2
+                       in ("",(SockAddrInet port host)) : decodeIPv4 r2
                   | otherwise = [] 
 
-    cW128 :: BS.ByteString -> (Word32, Word32, Word32, Word32)
-    cW128 bs =
-        let (q1, r1) = BS.splitAt 4 bs
-            (q2, r2) = BS.splitAt 4 r1
-            (q3, q4) = BS.splitAt 4 r2
-        in (cW32 q1, cW32 q2, cW32 q3, cW32 q4)
-    
-    cW32 :: BS.ByteString -> Word32
-    cW32 bs = fromIntegral . sum $ s
-      where up = BS.unpack bs
-            s  = [ fromIntegral b `shiftL` sa | (b, sa) <- PL.zip up [0,8,16,24]] :: [Word32]
 
-    cW16 :: BS.ByteString -> Word16
-    cW16 bs = fromIntegral . sum $ s
-      where s = [ fromIntegral b `shiftL` sa | (b, sa) <- PL.zip (BS.unpack bs) [0,8]] :: [Word16]
-    
-    to6Bytes :: BS.ByteString -> [BS.ByteString]
-    to6Bytes bs | bs == (BS.empty) = []
-    to6Bytes list = [BS.take 6 list] ++ to6Bytes (BS.drop 6 list) 
+-- biggest response is the one with lognest interval
+instance Ord TrackerResponse where
+  compare tr1 tr2 = compare tr1.interval tr2.interval
 
 
+-- process to keep data syncronized with trackers
+followTrackers :: [Word8] -> (Text,Text) -> TVar NetState -> IO ()
+followTrackers clientID (host,port) tVar = do
+  tState <- atomically $ readTVar tVar
+  --print tState
+  -- take biggest tracker polling interval 
+  let commonInterval = interval $ L.maximum tState.trResponses
+  print $ "commonInterval is " ++ show commonInterval
+  
+  -- polling trackers
+  newTrResponses' <- mapConcurrently 
+    (\TrackerResponse{url} -> runMaybeT $ trackerRequest clientID (host,port) tState.tFile url Nothing tState.uploaded tState.downloaded) 
+      tState.trResponses
+
+  -- fetching new peers and write `em to the torrent state
+  let newTrResponses = catMaybes newTrResponses' 
+  let newState = tState{ trResponses = L.union newTrResponses tState.trResponses
+                       , peers = newPeers tState ( L.concat $ L.map (\TrackerResponse{tPeers} -> tPeers) newTrResponses)
+                       }
+  atomically $ writeTVar tVar newState
+  
+  -- sleep and repeat
+  threadDelay $ (fromInteger commonInterval) * 1000000
+  followTrackers  clientID (host,port) tVar
 
 
 
-hoistMaybe :: Applicative m => Maybe b -> MaybeT m b
-hoistMaybe = MaybeT . pure
+-- add new peers to the list
+newPeers :: NetState -> [(Text,SockAddr)] -> [Peer]
+newPeers NetState{ peers } resps = 
+  let func :: (Text,SockAddr) -> [Peer] -> [Peer]
+      func (peerID,sockAddr) knownPeers = 
+        if PL.any (comparation sockAddr) knownPeers
+          then knownPeers
+          else (NewPeer peerID sockAddr) : knownPeers
+      
+      comparation sockAddr ActivePeer{addr} = sockAddr == addr
+      comparation sockAddr NewPeer{addr} = sockAddr == addr
+      
+  in L.foldr func peers resps
